@@ -51,20 +51,14 @@ function App() {
               const DEBOUNCE_MS = 800 // 800ms window
 
               if (now - prevTime >= DEBOUNCE_MS) {
-                // Confidence check (jen pro final results)
-                if (confidence !== undefined && confidence < 0.6) {
-                  console.log(`⚠️ Low confidence (${confidence}), ignoring`)
-                  return prevTime  // Neaktualizovat čas při low confidence
-                } else {
-                  // PŘIDAT +1
-                  setCount(prev => {
-                    const newCount = prev + 1
-                    playBeep()
-                    console.log(`✅ Count increased to ${newCount}`)
-                    return newCount
-                  })
-                  return now  // Aktualizovat čas jen při úspěchu
-                }
+                // PŘIDAT +1 (bez confidence check - Chrome Mobile má špatné hodnoty pro češtinu)
+                setCount(prev => {
+                  const newCount = prev + 1
+                  playBeep()
+                  console.log(`✅ Count increased to ${newCount}`)
+                  return newCount
+                })
+                return now
               } else {
                 console.log('⏱️ Debouncing - ignoring duplicate')
                 return prevTime
