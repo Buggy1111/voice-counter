@@ -10,6 +10,7 @@ function App() {
   const [lastCommand, setLastCommand] = useState('')
   const [error, setError] = useState('')
   const [lastDetectionTime, setLastDetectionTime] = useState(0)
+  const processedTranscriptsRef = useRef(new Set())
   const recognitionRef = useRef(null)
   const timerRef = useRef(null)
   const isListeningRef = useRef(false)
@@ -27,50 +28,63 @@ function App() {
       recognitionRef.current.maxAlternatives = 1
 
       recognitionRef.current.onresult = (event) => {
-        // Zpracovat všechny nové výsledky (interim i final)
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i]
-          const transcript = result[0].transcript.toLowerCase().trim()
-          const confidence = result[0].confidence
-          const isFinal = result.isFinal
+        // Zpracovat JEN POSLEDNÍ result (nejnovější a nejpřesnější)
+        const lastResultIndex = event.results.length - 1
+        const result = event.results[lastResultIndex]
+        const transcript = result[0].transcript.toLowerCase().trim()
+        const confidence = result[0].confidence
+        const isFinal = result.isFinal
 
-          // Zobrazit poslední rozpoznaný text
-          setLastCommand(`[${isFinal ? 'FINAL' : 'INTERIM'}] ${transcript}`)
+        // Zobrazit poslední rozpoznaný text
+        setLastCommand(`[${isFinal ? 'FINAL' : 'INTERIM'}] ${transcript}`)
 
-          console.log(`Speech: "${transcript}" (final: ${isFinal}, conf: ${confidence || 'N/A'})`)
+        console.log(`Speech: "${transcript}" (final: ${isFinal}, conf: ${confidence || 'N/A'})`)
 
-          // REAL-TIME DETEKCE klíčového slova
-          const triggerWords = ['můžeš', 'mužeš', 'muzes']
-          const hasKeyword = triggerWords.some(word => transcript.includes(word))
+        // Reset processed transcripts při FINAL result (začátek nového slova)
+        if (isFinal) {
+          processedTranscriptsRef.current.clear()
 
-          // ZPRACOVÁVAT JEN INTERIM RESULTS - real-time reakce
-          if (hasKeyword && !isFinal) {
-            // DEBOUNCING: Prevence duplicitních detekcí
-            setLastDetectionTime(prevTime => {
-              const now = Date.now()  // ✅ Vypočítat UVNITŘ callbacku
-              const DEBOUNCE_MS = 800 // 800ms window
-
-              if (now - prevTime >= DEBOUNCE_MS) {
-                // PŘIDAT +1 (bez confidence check - Chrome Mobile má špatné hodnoty pro češtinu)
-                setCount(prev => {
-                  const newCount = prev + 1
-                  playBeep()
-                  console.log(`✅ Count increased to ${newCount}`)
-                  return newCount
-                })
-                return now
-              } else {
-                console.log('⏱️ Debouncing - ignoring duplicate')
-                return prevTime
-              }
-            })
-          }
-
-          // Příkaz pro ukončení (čekat na final result)
-          if (transcript.includes('hotovo') && isFinal) {
+          // Příkaz pro ukončení
+          if (transcript.includes('hotovo')) {
             console.log('🏁 Stopping counting')
             stopCounting()
           }
+          return
+        }
+
+        // REAL-TIME DETEKCE klíčového slova (jen INTERIM)
+        const triggerWords = ['můžeš', 'mužeš', 'muzes']
+        const hasKeyword = triggerWords.some(word => transcript.includes(word))
+
+        if (hasKeyword) {
+          // Prevence duplicitních detekcí - check processed transcripts
+          if (processedTranscriptsRef.current.has(transcript)) {
+            console.log(`🔄 Already processed: "${transcript}"`)
+            return
+          }
+
+          // Přidat do processed
+          processedTranscriptsRef.current.add(transcript)
+
+          // DEBOUNCING: Prevence duplicitních detekcí
+          setLastDetectionTime(prevTime => {
+            const now = Date.now()
+            const DEBOUNCE_MS = 800
+
+            if (now - prevTime >= DEBOUNCE_MS) {
+              // PŘIDAT +1
+              setCount(prev => {
+                const newCount = prev + 1
+                playBeep()
+                console.log(`✅ Count increased to ${newCount}`)
+                return newCount
+              })
+              return now
+            } else {
+              console.log('⏱️ Debouncing - ignoring duplicate')
+              return prevTime
+            }
+          })
         }
       }
 
