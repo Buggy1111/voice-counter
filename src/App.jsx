@@ -9,8 +9,12 @@ function App() {
   const [isFinished, setIsFinished] = useState(false)
   const [lastCommand, setLastCommand] = useState('')
   const [error, setError] = useState('')
+  const [lastDetectionTime, setLastDetectionTime] = useState(0)
   const recognitionRef = useRef(null)
   const timerRef = useRef(null)
+  const isListeningRef = useRef(false)
+  const isFinishedRef = useRef(false)
+  const wakeLockRef = useRef(null)
 
   // Initialize speech recognition
   const initRecognition = () => {
@@ -18,34 +22,59 @@ function App() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
       recognitionRef.current = new SpeechRecognition()
       recognitionRef.current.continuous = true
-      recognitionRef.current.interimResults = false
+      recognitionRef.current.interimResults = true  // ✅ REAL-TIME detekce
       recognitionRef.current.lang = 'cs-CZ'
+      recognitionRef.current.maxAlternatives = 1
 
       recognitionRef.current.onresult = (event) => {
-        const last = event.results.length - 1
-        const command = event.results[last][0].transcript.toLowerCase().trim()
-        setLastCommand(command)
+        // Zpracovat všechny nové výsledky (interim i final)
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i]
+          const transcript = result[0].transcript.toLowerCase().trim()
+          const confidence = result[0].confidence
+          const isFinal = result.isFinal
 
-        console.log('Rozpoznáno:', command)
+          // Zobrazit poslední rozpoznaný text
+          setLastCommand(`[${isFinal ? 'FINAL' : 'INTERIM'}] ${transcript}`)
 
-        // Příkazy pro zvýšení počtu
-        if (command.includes('můžeš') ||
-            command.includes('další') ||
-            command.includes('už') ||
-            command.includes('mužeš') || // varianta překlep
-            command.includes('muzes')) {  // bez háčků
-          setCount(prev => {
-            const newCount = prev + 1
-            playBeep() // Audio feedback
-            // Optional: also speak the number
-            // speakNumber(newCount)
-            return newCount
-          })
-        }
+          console.log(`Speech: "${transcript}" (final: ${isFinal}, conf: ${confidence || 'N/A'})`)
 
-        // Příkaz pro ukončení
-        if (command.includes('hotovo')) {
-          stopCounting()
+          // REAL-TIME DETEKCE klíčového slova
+          const triggerWords = ['můžeš', 'mužeš', 'muzes']
+          const hasKeyword = triggerWords.some(word => transcript.includes(word))
+
+          if (hasKeyword) {
+            // DEBOUNCING: Prevence duplicitních detekcí
+            const now = Date.now()
+            const DEBOUNCE_MS = 800 // 800ms window
+
+            setLastDetectionTime(prevTime => {
+              if (now - prevTime >= DEBOUNCE_MS) {
+                // Confidence check (jen pro final results)
+                if (isFinal && confidence !== undefined && confidence < 0.6) {
+                  console.log(`⚠️ Low confidence (${confidence}), ignoring`)
+                } else {
+                  // PŘIDAT +1
+                  setCount(prev => {
+                    const newCount = prev + 1
+                    playBeep()
+                    console.log(`✅ Count increased to ${newCount}`)
+                    return newCount
+                  })
+                }
+                return now
+              } else {
+                console.log('⏱️ Debouncing - ignoring duplicate')
+                return prevTime
+              }
+            })
+          }
+
+          // Příkaz pro ukončení (čekat na final result)
+          if (transcript.includes('hotovo') && isFinal) {
+            console.log('🏁 Stopping counting')
+            stopCounting()
+          }
         }
       }
 
@@ -72,8 +101,20 @@ function App() {
       }
 
       recognitionRef.current.onend = () => {
-        // Recognition ended - could auto-restart here if needed
         console.log('Recognition ended')
+
+        // Auto-restart if still listening (critical for mobile devices)
+        if (isListeningRef.current && !isFinishedRef.current) {
+          console.log('Auto-restarting recognition...')
+          try {
+            recognitionRef.current.start()
+          } catch (e) {
+            // Ignore "already started" error
+            if (e.message && !e.message.includes('already started')) {
+              console.error('Failed to restart recognition:', e)
+            }
+          }
+        }
       }
     }
   }
@@ -84,8 +125,58 @@ function App() {
       if (recognitionRef.current) {
         recognitionRef.current.stop()
       }
+      if (wakeLockRef.current) {
+        wakeLockRef.current.release()
+      }
     }
   }, [])
+
+  // Wake Lock - keep screen awake and app running even when phone is locked
+  const requestWakeLock = async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request('screen')
+        console.log('✅ Wake Lock activated - phone will stay awake')
+
+        // Re-request wake lock when page becomes visible again
+        wakeLockRef.current.addEventListener('release', () => {
+          console.log('Wake Lock released')
+        })
+      } else {
+        console.log('⚠️ Wake Lock API not supported on this device')
+      }
+    } catch (err) {
+      console.error('Failed to activate Wake Lock:', err)
+    }
+  }
+
+  const releaseWakeLock = async () => {
+    try {
+      if (wakeLockRef.current) {
+        await wakeLockRef.current.release()
+        wakeLockRef.current = null
+        console.log('Wake Lock released')
+      }
+    } catch (err) {
+      console.error('Failed to release Wake Lock:', err)
+    }
+  }
+
+  // Re-acquire wake lock when page becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && isListening && !isFinished) {
+        console.log('Page visible - re-acquiring Wake Lock')
+        await requestWakeLock()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [isListening, isFinished])
 
   // Timer
   useEffect(() => {
@@ -141,23 +232,35 @@ function App() {
   const startCounting = async () => {
     setError('')
 
-    // Test microphone access first
+    // Test microphone access with enhanced constraints for noisy environment
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,    // Potlačení ozvěny
+          noiseSuppression: true,    // Potlačení šumu
+          autoGainControl: true,     // Automatická regulace hlasitosti
+          channelCount: 1,           // Mono je lepší pro rozpoznávání
+        }
+      })
       stream.getTracks().forEach(track => track.stop()) // Stop the test stream
-      console.log('Microphone access granted')
+      console.log('Microphone access granted with enhanced settings')
     } catch (err) {
       console.error('Microphone access denied:', err)
-      setError('Mikrofon není dostupný. Zkontrolujte oprávnění v nastavení Windows.')
+      setError('Mikrofon není dostupný. Zkontrolujte oprávnění v nastavení.')
       return
     }
 
     setIsListening(true)
+    isListeningRef.current = true
     setStartTime(Date.now())
     setIsFinished(false)
+    isFinishedRef.current = false
 
     // Initialize recognition on first start (user gesture required)
     initRecognition()
+
+    // Request Wake Lock to keep phone awake
+    await requestWakeLock()
 
     // Start recognition
     if (recognitionRef.current) {
@@ -168,19 +271,27 @@ function App() {
         console.error('Failed to start recognition:', e)
         setError('Nelze spustit rozpoznávání hlasu. Zkuste to znovu.')
         setIsListening(false)
+        isListeningRef.current = false
+        await releaseWakeLock()
       }
     }
   }
 
-  const stopCounting = () => {
+  const stopCounting = async () => {
+    isListeningRef.current = false   // Nastavit PŘED stop()
+    isFinishedRef.current = true     // Nastavit PŘED stop()
+
     if (recognitionRef.current) {
       recognitionRef.current.stop()
     }
     setIsListening(false)
     setIsFinished(true)
+
+    // Release Wake Lock
+    await releaseWakeLock()
   }
 
-  const reset = () => {
+  const reset = async () => {
     setCount(0)
     setElapsedTime(0)
     setIsFinished(false)
@@ -189,6 +300,9 @@ function App() {
     if (timerRef.current) {
       clearInterval(timerRef.current)
     }
+
+    // Release Wake Lock if active
+    await releaseWakeLock()
   }
 
   const formatTime = (ms) => {
@@ -276,19 +390,10 @@ function App() {
 
         {/* Error Message */}
         {error && (
-          <div className="error" style={{ marginBottom: '20px' }}>
+          <div className="error">
             {error}
           </div>
         )}
-
-        {/* Instructions */}
-        <div className="instructions">
-          <h3>Příkazy</h3>
-          <ul>
-            <li><strong>"můžeš"</strong> nebo <strong>"další"</strong> nebo <strong>"už"</strong> → přidá +1</li>
-            <li><strong>"hotovo"</strong> → zastaví počítání</li>
-          </ul>
-        </div>
 
         {/* Browser Support */}
         {!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) && (
