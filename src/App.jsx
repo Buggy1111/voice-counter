@@ -43,8 +43,8 @@ function App() {
           const triggerWords = ['můžeš', 'mužeš', 'muzes']
           const hasKeyword = triggerWords.some(word => transcript.includes(word))
 
-          // ZPRACOVÁVAT JEN FINAL RESULTS - prevence duplicit
-          if (hasKeyword && isFinal) {
+          // ZPRACOVÁVAT JEN INTERIM RESULTS - real-time reakce
+          if (hasKeyword && !isFinal) {
             // DEBOUNCING: Prevence duplicitních detekcí
             setLastDetectionTime(prevTime => {
               const now = Date.now()  // ✅ Vypočítat UVNITŘ callbacku
