@@ -46,14 +46,15 @@ function App() {
           // ZPRACOVÁVAT JEN FINAL RESULTS - prevence duplicit
           if (hasKeyword && isFinal) {
             // DEBOUNCING: Prevence duplicitních detekcí
-            const now = Date.now()
-            const DEBOUNCE_MS = 800 // 800ms window
-
             setLastDetectionTime(prevTime => {
+              const now = Date.now()  // ✅ Vypočítat UVNITŘ callbacku
+              const DEBOUNCE_MS = 800 // 800ms window
+
               if (now - prevTime >= DEBOUNCE_MS) {
                 // Confidence check (jen pro final results)
-                if (isFinal && confidence !== undefined && confidence < 0.6) {
+                if (confidence !== undefined && confidence < 0.6) {
                   console.log(`⚠️ Low confidence (${confidence}), ignoring`)
+                  return prevTime  // Neaktualizovat čas při low confidence
                 } else {
                   // PŘIDAT +1
                   setCount(prev => {
@@ -62,8 +63,8 @@ function App() {
                     console.log(`✅ Count increased to ${newCount}`)
                     return newCount
                   })
+                  return now  // Aktualizovat čas jen při úspěchu
                 }
-                return now
               } else {
                 console.log('⏱️ Debouncing - ignoring duplicate')
                 return prevTime
